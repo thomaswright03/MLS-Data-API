@@ -29,16 +29,31 @@ Pulls listings and sales from **every brokerage** in the client's 17 MLSs into t
    supabase secrets set MLS_RECOLORADO_TOKEN=...
    ```
 3. Optional tuning per feed: `max_records_per_run` (default 1000) keeps each run under Supabase's CPU/memory limit (runs that go over are killed with HTTP 546), and `store_raw` (default off) keeps the full RESO record. `last_status` is `running` while a run is in progress, `partial` when it stopped at the limit (the next run continues), `ok` when caught up, and `error` with `last_error` set. A status stuck on `running` with an old `last_run_at` means the run was killed.
-4. Run it once by hand: `POST /functions/v1/sync-mls?feed=CRMLS`. The first run backfills 2 years (`backfill_from`) and may take several runs to finish. Check `mls_feeds.last_status`.
-5. Schedule it (every 10 minutes during the backfill, hourly after) with pg_cron and pg_net:
+4. One-time: create the trigger secret. The function rejects any call without it (the public anon key alone can't trigger syncs):
+   ```
+   openssl rand -hex 32            # copy the output
+   supabase secrets set SYNC_SECRET=<that value>
+   ```
+   and store the same value in Vault so the scheduler can use it: `select vault.create_secret('<that value>', 'mls_sync_secret');`
+5. Run it once by hand: `curl -X POST -H "x-sync-secret: <that value>" https://<project-ref>.supabase.co/functions/v1/sync-mls?feed=CRMLS`. The first run backfills 2 years (`backfill_from`) and may take several runs. Check `mls_feeds.last_status`.
+6. Schedule it (every 10 minutes during the backfill, hourly after) with pg_cron and pg_net, reading the secret from Vault (never paste keys into the cron SQL):
    ```sql
    select cron.schedule('sync-mls', '*/10 * * * *', $$
      select net.http_post(
        url := 'https://<project-ref>.supabase.co/functions/v1/sync-mls',
-       headers := jsonb_build_object('Authorization', 'Bearer ' || '<service-role-key from vault>')
+       headers := jsonb_build_object('x-sync-secret',
+         (select decrypted_secret from vault.decrypted_secrets where name = 'mls_sync_secret'))
      );
    $$);
    ```
+
+## Security
+
+- **Read-only toward the MLS:** the sync only sends GET requests, only follows paging links on the feed's own host, and refuses non-https feed URLs, so the MLS token can't be sent anywhere else.
+- **Locked-down tables:** `mls_listings`, `mls_listings_v` and `mls_feeds` have RLS on, no read policies, and explicit revokes from `anon` and `authenticated`. Only the service role (the sync job) can read or write. The view is `security_invoker`, so it can't bypass RLS. To let specific staff read the data, add a narrow policy (there's an example in the migration). Don't open it to all signed-in users; MLS licenses usually limit this data to the brokerage.
+- **Confidential fields never stored:** showing instructions, lockbox/access/gate codes, private remarks and owner/seller names are dropped even when `store_raw` is on.
+- **Secrets:** MLS credentials and `SYNC_SECRET` live only in Supabase function secrets and Vault. Never commit them, paste them in chat, or put them in a table.
+- **Trigger protection:** the function only accepts POST with a correct `x-sync-secret` (compared in constant time), and refuses everything if `SYNC_SECRET` isn't set.
 
 ## Example queries
 

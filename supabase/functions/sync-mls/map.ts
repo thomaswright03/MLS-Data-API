@@ -49,11 +49,19 @@ const enumStr = (v: unknown): string | null => {
   return s.includes("'") ? s.replace(/^.*'(.*)'$/, "$1") : s;
 };
 
+// Back-office feeds include agent-only fields (showing instructions, lockbox/access codes,
+// private remarks, seller names). Never keep these, even when store_raw is on.
+const CONFIDENTIAL = /^(PrivateRemarks|PrivateOfficeRemarks|AgentOnlyRemarks|ShowingInstructions|ShowingContact.*|ShowingRequirements|LockBox.*|AccessCode|GateCode|AlarmCode|Owner.*|SellerName|Seller.*Name|.*Password.*)$/i;
+
 export function mapResoProperty(feedId: string, r: ResoRecord, opts: { storeRaw?: boolean } = {}) {
   const listingKey = str(first(r, "ListingKey", "ListingKeyNumeric", "ListingId"));
   if (!listingKey) return null;
 
-  const { Media: _media, ...raw } = r; // photos are large and not needed here
+  const raw: ResoRecord = {};
+  for (const [k, v] of Object.entries(r)) {
+    if (k === "Media" || CONFIDENTIAL.test(k)) continue; // photos are large; confidential fields never stored
+    raw[k] = v;
+  }
 
   return {
     feed_id: feedId,

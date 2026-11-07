@@ -54,6 +54,10 @@ export async function syncFeed(
   let count = 0;
   let watermark = feed.last_modification_ts ? new Date(feed.last_modification_ts).toISOString() : null;
 
+  const origin = new URL(feed.base_url).origin;
+  if (!origin.startsWith("https://") && !/^http:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin)) {
+    throw new Error("base_url must use https");
+  }
   const maxRecords = feed.max_records_per_run ?? 1000;
   while (url && Date.now() < deadline && count < maxRecords) {
     const page = await fetchPage(url, token, fetchFn);
@@ -73,7 +77,11 @@ export async function syncFeed(
       watermark = pageMax;
       await store.saveWatermark(feed.id, watermark);
     }
-    url = page.next;
+    // Only follow paging links on the feed's own host, so the token is never sent elsewhere.
+    if (page.next && new URL(page.next, feed.base_url).origin !== origin) {
+      throw new Error(`Refusing nextLink to a different host: ${new URL(page.next, feed.base_url).origin}`);
+    }
+    url = page.next ? new URL(page.next, feed.base_url).toString() : null;
   }
   return { count, complete: url === null };
 }

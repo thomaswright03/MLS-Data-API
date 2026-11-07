@@ -16,7 +16,7 @@ const MAX_RECORDS = Number(process.env.MAX_RECORDS ?? 400);
 const BACKFILL_FROM = process.env.BACKFILL_FROM ?? "2000-01-01T00:00:00Z";
 
 const db = new PGlite();
-await db.exec(`create role authenticated; create table public.anywhere_agents (id uuid primary key, mls_numbers text[]);`);
+await db.exec(`create role authenticated; create role anon; create table public.anywhere_agents (id uuid primary key, mls_numbers text[]);`);
 await db.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
 await db.query(
   `insert into mls_feeds (id, display_name, platform, base_url, auth_type, page_size, backfill_from, is_enabled)

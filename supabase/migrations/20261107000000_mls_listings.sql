@@ -112,7 +112,7 @@ begin
       where l.list_agent_mls_id = any(a.mls_numbers) or l.buyer_agent_mls_id = any(a.mls_numbers))';
   end if;
   execute format($v$
-    create or replace view public.mls_listings_v as
+    create or replace view public.mls_listings_v with (security_invoker = true) as
     select
       l.*,
       coalesce(
@@ -126,13 +126,29 @@ begin
 end
 $mig$;
 
--- 4. Security: only the service role (the sync job) writes. Signed-in app users can read.
+-- 4. Security. Locked down by default: only the service role (the sync job) can read or write.
+--    - RLS on both tables with no policies, so anon/authenticated API keys see nothing.
+--    - Explicit revokes, because Supabase grants new public-schema objects to anon/authenticated.
+--    - The view is security_invoker, so it can't be used to bypass RLS on mls_listings.
+--    MLS licenses usually limit this data to brokerage staff. To let specific app users read it,
+--    add a narrow policy, e.g. (adjust to the client's profiles table):
+--      grant select on public.mls_listings, public.mls_listings_v to authenticated;
+--      create policy mls_listings_staff_read on public.mls_listings for select to authenticated
+--        using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role in ('admin','broker')));
 alter table public.mls_feeds    enable row level security;
 alter table public.mls_listings enable row level security;
-
 drop policy if exists mls_listings_read on public.mls_listings;
-create policy mls_listings_read on public.mls_listings
-  for select to authenticated using (true);
+
+do $sec$
+declare r text;
+begin
+  foreach r in array array['anon', 'authenticated'] loop
+    if exists (select 1 from pg_roles where rolname = r) then
+      execute format('revoke all on public.mls_feeds, public.mls_listings, public.mls_listings_v from %I', r);
+    end if;
+  end loop;
+end
+$sec$;
 
 -- 5. Seed the 17 MLSs (disabled until credentials are added). Platform per research
 --    on 2026-11-07; confirm with each MLS when the feed is approved.

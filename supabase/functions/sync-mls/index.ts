@@ -63,7 +63,23 @@ async function getAccessToken(feed: Feed): Promise<string> {
   return json.access_token as string;
 }
 
+// Callers must send x-sync-secret matching the SYNC_SECRET function secret. The anon key is public
+// (it ships in the client's web app), so a valid JWT alone must not be able to trigger syncs.
+function authorized(req: Request): boolean {
+  const expected = Deno.env.get("SYNC_SECRET");
+  const given = req.headers.get("x-sync-secret");
+  if (!expected || expected.length < 32 || !given) return false;
+  const a = new TextEncoder().encode(expected);
+  const b = new TextEncoder().encode(given);
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
 Deno.serve(async (req) => {
+  if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  if (!authorized(req)) return new Response("Unauthorized", { status: 401 });
   const deadline = Date.now() + TIME_BUDGET_MS;
   const only = new URL(req.url).searchParams.get("feed");
 

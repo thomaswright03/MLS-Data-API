@@ -66,7 +66,7 @@ const rec = (n: number, ts: string, extra: Rec = {}): Rec => ({
 // ---------- real Postgres with the real migration ----------
 const db = new PGlite();
 await db.exec(`
-  create role authenticated;
+  create role authenticated; create role anon;
   create table public.anywhere_agents (id uuid primary key, mls_numbers text[]);
   insert into public.anywhere_agents values ('00000000-0000-0000-0000-000000000001', array['AG3']);
 `);
@@ -169,7 +169,7 @@ test("a bad token surfaces a clear error", async () => {
 
 test("migration also applies on a fresh project without anywhere_agents", async () => {
   const fresh = new PGlite();
-  await fresh.exec(`create role authenticated;`);
+  await fresh.exec(`create role authenticated; create role anon;`);
   await fresh.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
   const { rows } = await fresh.query<Rec>(`select count(*)::int as n from mls_listings_v`);
   assert.equal(rows[0].n, 0);
@@ -177,9 +177,9 @@ test("migration also applies on a fresh project without anywhere_agents", async 
 
 test("each run stops cleanly at max_records_per_run and the next run resumes", async () => {
   const fresh = new PGlite();
-  await fresh.exec(`create role authenticated;`);
+  await fresh.exec(`create role authenticated; create role anon;`);
   await fresh.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
-  await fresh.exec(`update mls_feeds set base_url = 'http://x', page_size = 2, max_records_per_run = 4, is_enabled = true where id = 'CRMLS'`);
+  await fresh.exec(`update mls_feeds set base_url = 'https://mls.example', page_size = 2, max_records_per_run = 4, is_enabled = true where id = 'CRMLS'`);
   const recs = [1, 2, 3, 4, 5, 6, 7].map((n) => rec(n, `2026-09-0${n}T00:00:00Z`));
   const fakeFetch: typeof fetch = async (input) => {
     const u = new URL(String(input));
@@ -206,4 +206,28 @@ test("each run stops cleanly at max_records_per_run and the next run resumes", a
   const second = await syncFeed(await load(), "t", freshStore, Date.now() + 5000, fakeFetch);
   assert.equal(second.complete, true);
   assert.equal(keys.size, 7, "every record synced across the two runs");
+});
+
+test("anon and signed-in API roles cannot read MLS data, even through the view", async () => {
+  for (const role of ["anon", "authenticated"]) {
+    for (const rel of ["mls_listings", "mls_listings_v", "mls_feeds"]) {
+      await db.exec(`set role ${role}`);
+      await assert.rejects(db.query(`select * from ${rel} limit 1`), /permission denied/, `${role} read ${rel}`);
+      await db.exec(`reset role`);
+    }
+  }
+});
+
+test("paging links to another host are refused, so the token never leaves the feed's host", async () => {
+  const evilFetch: typeof fetch = async () =>
+    new Response(JSON.stringify({ value: [rec(99, "2026-10-09T00:00:00Z")], "@odata.nextLink": "https://evil.example/steal" }), { status: 200 });
+  const feed = { ...(await loadFeed()), base_url: "https://mls.example/odata" };
+  const noop: Store = { async upsertListings() {}, async saveWatermark() {} };
+  await assert.rejects(syncFeed(feed, "t", noop, Date.now() + 5000, evilFetch), /different host/);
+});
+
+test("plain-http feed URLs are refused", async () => {
+  const feed = { ...(await loadFeed()), base_url: "http://mls.example/odata" };
+  const noop: Store = { async upsertListings() {}, async saveWatermark() {} };
+  await assert.rejects(syncFeed(feed, "t", noop, Date.now() + 5000), /https/);
 });
