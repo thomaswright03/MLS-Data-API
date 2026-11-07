@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test supabase/functions/sync-mls/map.test.ts tests/e2e.test.ts"
+    "test": "node --experimental-strip-types --test supabase/functions/sync-mls/map.test.ts tests/e2e.test.ts",
+    "live-test": "node --experimental-strip-types scripts/live-test.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.2.17"
