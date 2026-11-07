@@ -11,6 +11,8 @@ export type Feed = {
   page_size: number;
   backfill_from: string;
   last_modification_ts: string | null;
+  max_records_per_run?: number;
+  store_raw?: boolean;
 };
 
 export type ListingRow = NonNullable<ReturnType<typeof mapResoProperty>>;
@@ -52,10 +54,11 @@ export async function syncFeed(
   let count = 0;
   let watermark = feed.last_modification_ts ? new Date(feed.last_modification_ts).toISOString() : null;
 
-  while (url && Date.now() < deadline) {
+  const maxRecords = feed.max_records_per_run ?? 1000;
+  while (url && Date.now() < deadline && count < maxRecords) {
     const page = await fetchPage(url, token, fetchFn);
     const rows = page.value
-      .map((r) => mapResoProperty(feed.id, r))
+      .map((r) => mapResoProperty(feed.id, r, { storeRaw: feed.store_raw }))
       .filter((r): r is ListingRow => r !== null);
 
     if (rows.length) await store.upsertListings(rows);

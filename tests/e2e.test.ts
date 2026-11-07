@@ -71,7 +71,7 @@ await db.exec(`
   insert into public.anywhere_agents values ('00000000-0000-0000-0000-000000000001', array['AG3']);
 `);
 await db.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
-await db.exec(`update mls_feeds set base_url = 'http://localhost:${port}/odata', page_size = 2, is_enabled = true where id = 'PCBAOR'`);
+await db.exec(`update mls_feeds set base_url = 'http://localhost:${port}/odata', page_size = 2, store_raw = true, is_enabled = true where id = 'PCBAOR'`);
 
 const store: Store = {
   async upsertListings(rows: ListingRow[]) {
@@ -173,4 +173,37 @@ test("migration also applies on a fresh project without anywhere_agents", async 
   await fresh.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
   const { rows } = await fresh.query<Rec>(`select count(*)::int as n from mls_listings_v`);
   assert.equal(rows[0].n, 0);
+});
+
+test("each run stops cleanly at max_records_per_run and the next run resumes", async () => {
+  const fresh = new PGlite();
+  await fresh.exec(`create role authenticated;`);
+  await fresh.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
+  await fresh.exec(`update mls_feeds set base_url = 'http://x', page_size = 2, max_records_per_run = 4, is_enabled = true where id = 'CRMLS'`);
+  const recs = [1, 2, 3, 4, 5, 6, 7].map((n) => rec(n, `2026-09-0${n}T00:00:00Z`));
+  const fakeFetch: typeof fetch = async (input) => {
+    const u = new URL(String(input));
+    const since = new Date(u.searchParams.get("$filter")!.split(" ge ")[1]).getTime();
+    const skip = Number(u.searchParams.get("$skip") ?? 0);
+    const m = recs.filter((r) => new Date(r.ModificationTimestamp as string).getTime() >= since);
+    const body: Rec = { value: m.slice(skip, skip + 2) };
+    if (skip + 2 < m.length) { u.searchParams.set("$skip", String(skip + 2)); body["@odata.nextLink"] = u.toString(); }
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const keys = new Set<string>();
+  const freshStore: Store = {
+    async upsertListings(rows) { rows.forEach((r) => keys.add(r.listing_key)); },
+    async saveWatermark(id, ts) { await fresh.query(`update mls_feeds set last_modification_ts = $1 where id = $2`, [ts, id]); },
+  };
+  const load = async () => {
+    const f = (await fresh.query<Rec>(`select * from mls_feeds where id = 'CRMLS'`)).rows[0];
+    return { ...(f as Feed), backfill_from: "2026-01-01T00:00:00Z",
+      last_modification_ts: f.last_modification_ts ? new Date(f.last_modification_ts as string).toISOString() : null };
+  };
+  const first = await syncFeed(await load(), "t", freshStore, Date.now() + 5000, fakeFetch);
+  assert.equal(first.count, 4);
+  assert.equal(first.complete, false, "stopped at the per-run limit");
+  const second = await syncFeed(await load(), "t", freshStore, Date.now() + 5000, fakeFetch);
+  assert.equal(second.complete, true);
+  assert.equal(keys.size, 7, "every record synced across the two runs");
 });

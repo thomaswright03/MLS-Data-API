@@ -28,10 +28,11 @@ Pulls listings and sales from **every brokerage** in the client's 17 MLSs into t
    # bearer-token feeds (Bridge, Spark, UtahRealEstate):
    supabase secrets set MLS_RECOLORADO_TOKEN=...
    ```
-3. Run it once by hand: `POST /functions/v1/sync-mls?feed=CRMLS`. The first run backfills 2 years (`backfill_from`) and may take several runs to finish. Check `mls_feeds.last_status`.
-4. Schedule it hourly with pg_cron and pg_net:
+3. Optional tuning per feed: `max_records_per_run` (default 1000) keeps each run under Supabase's CPU/memory limit (runs that go over are killed with HTTP 546), and `store_raw` (default off) keeps the full RESO record. `last_status` is `running` while a run is in progress, `partial` when it stopped at the limit (the next run continues), `ok` when caught up, and `error` with `last_error` set. A status stuck on `running` with an old `last_run_at` means the run was killed.
+4. Run it once by hand: `POST /functions/v1/sync-mls?feed=CRMLS`. The first run backfills 2 years (`backfill_from`) and may take several runs to finish. Check `mls_feeds.last_status`.
+5. Schedule it (every 10 minutes during the backfill, hourly after) with pg_cron and pg_net:
    ```sql
-   select cron.schedule('sync-mls-hourly', '7 * * * *', $$
+   select cron.schedule('sync-mls', '*/10 * * * *', $$
      select net.http_post(
        url := 'https://<project-ref>.supabase.co/functions/v1/sync-mls',
        headers := jsonb_build_object('Authorization', 'Bearer ' || '<service-role-key from vault>')

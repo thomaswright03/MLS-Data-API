@@ -49,7 +49,7 @@ const enumStr = (v: unknown): string | null => {
   return s.includes("'") ? s.replace(/^.*'(.*)'$/, "$1") : s;
 };
 
-export function mapResoProperty(feedId: string, r: ResoRecord) {
+export function mapResoProperty(feedId: string, r: ResoRecord, opts: { storeRaw?: boolean } = {}) {
   const listingKey = str(first(r, "ListingKey", "ListingKeyNumeric", "ListingId"));
   if (!listingKey) return null;
 
@@ -123,7 +123,7 @@ export function mapResoProperty(feedId: string, r: ResoRecord) {
     year_built: int(r.YearBuilt),
 
     modification_timestamp: ts(r.ModificationTimestamp),
-    raw,
+    raw: opts.storeRaw ? raw : null,
     synced_at: new Date().toISOString(),
   };
 }

@@ -24,6 +24,12 @@ create table if not exists public.mls_feeds (
   updated_at             timestamptz not null default now()
 );
 
+-- Per-run limits. Supabase Edge Functions are killed (HTTP 546 WORKER_RESOURCE_LIMIT) when a
+-- run uses too much CPU/memory, so each run stops cleanly after max_records_per_run and the
+-- next run resumes. store_raw keeps the full RESO record (~11 KB each); off by default.
+alter table public.mls_feeds add column if not exists max_records_per_run integer not null default 1000;
+alter table public.mls_feeds add column if not exists store_raw boolean not null default false;
+
 -- 2. The listings themselves.
 create table if not exists public.mls_listings (
   feed_id                   text not null references public.mls_feeds(id),
@@ -83,7 +89,7 @@ create table if not exists public.mls_listings (
   year_built                integer,
 
   modification_timestamp    timestamptz,
-  raw                       jsonb,                    -- full RESO record minus Media, for fields we didn't map
+  raw                       jsonb,                    -- full RESO record minus Media, only when mls_feeds.store_raw
   synced_at                 timestamptz not null default now(),
   primary key (feed_id, listing_key)
 );

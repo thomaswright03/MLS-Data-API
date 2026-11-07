@@ -78,6 +78,13 @@ Deno.serve(async (req) => {
       results[feed.id] = { skipped: "time budget used; will run next time" };
       continue;
     }
+    // Mark the run first: if the worker is killed mid-run, the feed shows 'running'
+    // with a stale last_run_at instead of looking like it never ran.
+    await supabase.from("mls_feeds").update({
+      last_run_at: new Date().toISOString(),
+      last_status: "running",
+      last_error: null,
+    }).eq("id", feed.id);
     try {
       const token = await getAccessToken(feed);
       const r = await syncFeed(feed, token, store, deadline);

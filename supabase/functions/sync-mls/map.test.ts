@@ -28,7 +28,7 @@ const rec = {
   Media: [{ MediaURL: "x" }],
 };
 
-const row = mapResoProperty("CRMLS", rec)!;
+const row = mapResoProperty("CRMLS", rec, { storeRaw: true })!;
 assert.equal(row.listing_key, "1234567");
 assert.equal(row.close_price, 1450000);
 assert.equal(row.close_date, "2026-04-15");
@@ -39,6 +39,7 @@ assert.equal(row.buyer_agent_full_name, "Bob Buyer");
 assert.equal(row.bathrooms_total, 3);
 assert.equal(row.modification_timestamp, "2026-04-16T12:00:00.123Z");
 assert.ok(!("Media" in (row.raw as object)));
+assert.equal(mapResoProperty("CRMLS", rec)!.raw, null, "raw is off by default");
 assert.equal(mapResoProperty("CRMLS", { City: "x" }), null);
 
 const url = buildPropertyUrl("https://api-trestle.corelogic.com/trestle/odata/", "2024-11-07T00:00:00.000Z", 200);
