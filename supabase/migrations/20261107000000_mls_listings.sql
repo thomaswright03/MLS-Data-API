@@ -96,19 +96,29 @@ create index if not exists mls_listings_listing_id_idx  on public.mls_listings (
 
 -- 3. Convenience view: fills days on market when the MLS doesn't send it, and flags
 --    listings where one of OUR agents is on either side (via anywhere_agents.mls_numbers).
-create or replace view public.mls_listings_v as
-select
-  l.*,
-  coalesce(
-    l.days_on_market,
-    (coalesce(l.purchase_contract_date, l.close_date, l.off_market_date, current_date)
-       - coalesce(l.on_market_date, l.listing_contract_date))
-  ) as dom_effective,
-  exists (
-    select 1 from public.anywhere_agents a
-    where l.list_agent_mls_id = any(a.mls_numbers) or l.buyer_agent_mls_id = any(a.mls_numbers)
-  ) as involves_our_agent
-from public.mls_listings l;
+-- If public.anywhere_agents doesn't exist (e.g. a fresh test project), the flag is just false.
+do $mig$
+declare
+  our_agent_expr text := 'false';
+begin
+  if to_regclass('public.anywhere_agents') is not null then
+    our_agent_expr := 'exists (select 1 from public.anywhere_agents a
+      where l.list_agent_mls_id = any(a.mls_numbers) or l.buyer_agent_mls_id = any(a.mls_numbers))';
+  end if;
+  execute format($v$
+    create or replace view public.mls_listings_v as
+    select
+      l.*,
+      coalesce(
+        l.days_on_market,
+        (coalesce(l.purchase_contract_date, l.close_date, l.off_market_date, current_date)
+           - coalesce(l.on_market_date, l.listing_contract_date))
+      ) as dom_effective,
+      %s as involves_our_agent
+    from public.mls_listings l
+  $v$, our_agent_expr);
+end
+$mig$;
 
 -- 4. Security: only the service role (the sync job) writes. Signed-in app users can read.
 alter table public.mls_feeds    enable row level security;

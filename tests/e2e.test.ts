@@ -166,3 +166,11 @@ test("a bad token surfaces a clear error", async () => {
   );
   server.close();
 });
+
+test("migration also applies on a fresh project without anywhere_agents", async () => {
+  const fresh = new PGlite();
+  await fresh.exec(`create role authenticated;`);
+  await fresh.exec(readFileSync(new URL("../supabase/migrations/20261107000000_mls_listings.sql", import.meta.url), "utf8"));
+  const { rows } = await fresh.query<Rec>(`select count(*)::int as n from mls_listings_v`);
+  assert.equal(rows[0].n, 0);
+});
