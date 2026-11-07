@@ -24,6 +24,12 @@ create table if not exists public.mls_feeds (
   updated_at             timestamptz not null default now()
 );
 
+-- Per-run limits. Supabase Edge Functions are killed (HTTP 546 WORKER_RESOURCE_LIMIT) when a
+-- run uses too much CPU/memory, so each run stops cleanly after max_records_per_run and the
+-- next run resumes. store_raw keeps the full RESO record (~11 KB each); off by default.
+alter table public.mls_feeds add column if not exists max_records_per_run integer not null default 1000;
+alter table public.mls_feeds add column if not exists store_raw boolean not null default false;
+
 -- 2. The listings themselves.
 create table if not exists public.mls_listings (
   feed_id                   text not null references public.mls_feeds(id),
@@ -83,7 +89,7 @@ create table if not exists public.mls_listings (
   year_built                integer,
 
   modification_timestamp    timestamptz,
-  raw                       jsonb,                    -- full RESO record minus Media, for fields we didn't map
+  raw                       jsonb,                    -- full RESO record minus Media, only when mls_feeds.store_raw
   synced_at                 timestamptz not null default now(),
   primary key (feed_id, listing_key)
 );
@@ -96,27 +102,53 @@ create index if not exists mls_listings_listing_id_idx  on public.mls_listings (
 
 -- 3. Convenience view: fills days on market when the MLS doesn't send it, and flags
 --    listings where one of OUR agents is on either side (via anywhere_agents.mls_numbers).
-create or replace view public.mls_listings_v as
-select
-  l.*,
-  coalesce(
-    l.days_on_market,
-    (coalesce(l.purchase_contract_date, l.close_date, l.off_market_date, current_date)
-       - coalesce(l.on_market_date, l.listing_contract_date))
-  ) as dom_effective,
-  exists (
-    select 1 from public.anywhere_agents a
-    where l.list_agent_mls_id = any(a.mls_numbers) or l.buyer_agent_mls_id = any(a.mls_numbers)
-  ) as involves_our_agent
-from public.mls_listings l;
+-- If public.anywhere_agents doesn't exist (e.g. a fresh test project), the flag is just false.
+do $mig$
+declare
+  our_agent_expr text := 'false';
+begin
+  if to_regclass('public.anywhere_agents') is not null then
+    our_agent_expr := 'exists (select 1 from public.anywhere_agents a
+      where l.list_agent_mls_id = any(a.mls_numbers) or l.buyer_agent_mls_id = any(a.mls_numbers))';
+  end if;
+  execute format($v$
+    create or replace view public.mls_listings_v with (security_invoker = true) as
+    select
+      l.*,
+      coalesce(
+        l.days_on_market,
+        (coalesce(l.purchase_contract_date, l.close_date, l.off_market_date, current_date)
+           - coalesce(l.on_market_date, l.listing_contract_date))
+      ) as dom_effective,
+      %s as involves_our_agent
+    from public.mls_listings l
+  $v$, our_agent_expr);
+end
+$mig$;
 
--- 4. Security: only the service role (the sync job) writes. Signed-in app users can read.
+-- 4. Security. Locked down by default: only the service role (the sync job) can read or write.
+--    - RLS on both tables with no policies, so anon/authenticated API keys see nothing.
+--    - Explicit revokes, because Supabase grants new public-schema objects to anon/authenticated.
+--    - The view is security_invoker, so it can't be used to bypass RLS on mls_listings.
+--    MLS licenses usually limit this data to brokerage staff. To let specific app users read it,
+--    add a narrow policy, e.g. (adjust to the client's profiles table):
+--      grant select on public.mls_listings, public.mls_listings_v to authenticated;
+--      create policy mls_listings_staff_read on public.mls_listings for select to authenticated
+--        using (exists (select 1 from public.profiles p where p.id = auth.uid() and p.role in ('admin','broker')));
 alter table public.mls_feeds    enable row level security;
 alter table public.mls_listings enable row level security;
-
 drop policy if exists mls_listings_read on public.mls_listings;
-create policy mls_listings_read on public.mls_listings
-  for select to authenticated using (true);
+
+do $sec$
+declare r text;
+begin
+  foreach r in array array['anon', 'authenticated'] loop
+    if exists (select 1 from pg_roles where rolname = r) then
+      execute format('revoke all on public.mls_feeds, public.mls_listings, public.mls_listings_v from %I', r);
+    end if;
+  end loop;
+end
+$sec$;
 
 -- 5. Seed the 17 MLSs (disabled until credentials are added). Platform per research
 --    on 2026-11-07; confirm with each MLS when the feed is approved.
